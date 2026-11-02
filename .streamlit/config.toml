@@ -1,0 +1,9 @@
+# ערכת הצבעים של הממשק (שאר העיצוב ב־PAGE_STYLE שב־app.py)
+[theme]
+base = "light"
+primaryColor = "#F2643D"
+backgroundColor = "#FBFAFD"
+secondaryBackgroundColor = "#F3EFF8"
+textColor = "#1E1B2E"
+# הגופן מוגדר כאן ולא ב־CSS, כי Streamlit דורס גופנים שמוגדרים ב־CSS
+font = "Assistant:https://fonts.googleapis.com/css2?family=Assistant:wght@400;500;600;700;800&display=swap"

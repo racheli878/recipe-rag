@@ -1,0 +1,13 @@
+# מפתחות וסביבה
+.env
+.venv/
+venv/
+
+# האינדקס נבנה מקומית ולא נשמר ב־Git
+chroma_db/
+chroma_db_old/
+
+# קבצים זמניים של Python ו־VS Code
+__pycache__/
+*.pyc
+.vscode/
