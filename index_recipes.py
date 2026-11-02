@@ -6,6 +6,7 @@
     python index_recipes.py --rebuild   מחיקת האינדקס ובנייה מחדש, למשל אחרי תיקון ידני של recipes.json
     python index_recipes.py --show      הצגת כמה Chunks לדוגמה מתוך האינדקס
     python index_recipes.py --limit 700 אינדקס חלקי של עד 700 Chunks, כדי להשאיר מכסה יומית לשאלות
+    python index_recipes.py --update    עדכון רק של מתכונים שהשתנו (ושל מתכונים שהופרדו מהם) אחרי חילוץ מחדש
 """
 
 import json
@@ -121,11 +122,31 @@ def mix_categories(recipes):
     return mixed
 
 
-def build_index(rebuild=False, max_chunks=None):
+def find_changed_recipes(collection, recipes, splitter):
+    """אחרי תיקון בחילוץ או ב־recipes.json: מוצאת מתכונים שהטקסט שלהם באינדקס שונה מהטקסט הנוכחי,
+    ומתכונים חדשים שהופרדו מהם (שורת הכותרת שלהם הופיעה בתוך ה־Chunks הישנים). כך מעדכנים רק אותם."""
+    stored = collection.get(include=["documents", "metadatas"])
+    old_chunks = {}
+    for text, metadata in zip(stored["documents"], stored["metadatas"]):
+        old_chunks.setdefault(metadata["recipe_id"], []).append((metadata["chunk_index"], text))
+    by_id = {r["recipe_id"]: r for r in recipes}
+    changed_ids, old_lines = [], set()
+    for recipe_id, chunks in old_chunks.items():
+        current = [n.text for n in recipe_to_nodes(by_id[recipe_id], splitter)] if recipe_id in by_id else None
+        if current != [text for _, text in sorted(chunks)]:
+            changed_ids.append(recipe_id)
+            old_lines |= {line.strip() for _, text in chunks for line in text.split("\n")}
+    split_off = [r for r in recipes if r["recipe_id"] not in old_chunks
+                 and r["original_text"].split("\n")[0].strip() in old_lines]
+    return changed_ids, split_off
+
+
+def build_index(rebuild=False, max_chunks=None, update=False):
     """בונה את האינדקס מתוך recipes.json ושומרת אותו ב־ChromaDB.
     מתכונים שכבר נמצאים באינדקס מדולגים, כך שאם הבנייה נעצרה (למשל בגלל מכסה) אפשר פשוט להריץ שוב.
     rebuild=True מוחק את האינדקס ובונה מחדש, למשל אחרי תיקון ידני של recipes.json.
-    max_chunks מגביל את מספר ה־Chunks שיישלחו עכשיו, כי המכסה היומית החינמית היא 1,000 בקשות."""
+    max_chunks מגביל את מספר ה־Chunks שיישלחו עכשיו, כי המכסה היומית החינמית היא 1,000 בקשות.
+    update=True מעדכן רק מתכונים שהשתנו ומתכונים שהופרדו מהם, במקום לבנות הכול מחדש."""
     from llama_index.core import StorageContext, VectorStoreIndex
     from llama_index.core.node_parser import SentenceSplitter
 
@@ -147,6 +168,12 @@ def build_index(rebuild=False, max_chunks=None):
 
     splitter = SentenceSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP,
                                 paragraph_separator="\n", separator=" ")
+    if update:
+        changed_ids, split_off = find_changed_recipes(collection, recipes, splitter)
+        if changed_ids:
+            collection.delete(where={"recipe_id": {"$in": changed_ids}})  # ה־Chunks הישנים שלהם
+        todo = [r for r in recipes if r["recipe_id"] in changed_ids] + split_off
+        print(f"עדכון: {len(changed_ids)} מתכונים השתנו, ו־{len(split_off)} מתכונים חדשים הופרדו מהם.")
     if max_chunks:
         selected, total = [], 0
         for recipe in mix_categories(todo):
@@ -229,6 +256,6 @@ if __name__ == "__main__":
         sys.exit()
     try:
         limit = int(sys.argv[sys.argv.index("--limit") + 1]) if "--limit" in sys.argv else None
-        build_index(rebuild="--rebuild" in sys.argv, max_chunks=limit)
+        build_index(rebuild="--rebuild" in sys.argv, max_chunks=limit, update="--update" in sys.argv)
     except RuntimeError as error:  # למשל מפתח חסר
         print(error)

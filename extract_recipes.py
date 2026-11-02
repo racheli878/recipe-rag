@@ -155,6 +155,20 @@ def is_title_line(line, prev_blank_count, next_text, is_txt):
             and not re.search(r"[\d:.#]", text) and not is_instruction_verb(text.split()[0]) \
             and text.split()[0] not in ("או", "מיץ", "קופסא", "קופסת", "חבילת", "עוד", "אחכ", "אח\"כ", "ואז", "רסק"):
         return True
+    # כותרת לא מודגשת שמיד אחריה מתחיל חלק של מתכון ('שכבה א':', 'פירורים:')
+    words = text.split()
+    next_is_part = ":" in (next_text or "") and is_section_header(next_text.split(":")[0])
+    starts_like_name = (not re.match(r"^[\d½¼¾⅓⅔⅛(]", text) and ":" not in text and not is_instruction_verb(words[0])
+                        and not re.fullmatch(r"מ[א-ת]{3,}ים", words[0])  # 'מבשלים', 'מערבבים' פותחים הוראה
+                        and not set(words) & {"לאפות", "דקות", "מעלות", "מתאים", "מתאימה"})
+    if prev_blank_count >= 1 and len(words) <= 8 and next_is_part and starts_like_name:
+        return True
+    # 'מוס שוקולד- ענבל': שם ומחברת אחרי מקף, גם בלי שורה ריקה לפני, כשאחריו מתחילים רכיבים או חלק
+    dash = re.match(r"^([^\d]+?)-\s*([א-ת'\"]+(?: [א-ת'\"]+){0,2})$", text)
+    if dash and starts_like_name and len(words) <= 7 and not is_instruction_verb(dash.group(2).split()[0]) \
+            and (next_is_part or re.match(r"^[\d½¼¾⅓⅔⅛]", next_text or "")) \
+            and not any(w in QUANTITY_WORDS or w in NOT_AUTHOR_WORDS for w in dash.group(2).split()):
+        return True
     # בקובץ TXT: שורה קצרה אחרי שורה ריקה, שאינה נראית כמו רכיב
     if is_txt and prev_blank_count >= 1 and not looks_like_ingredient(text) and len(text.split()) <= 8:
         return True

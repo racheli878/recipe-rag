@@ -40,7 +40,7 @@ def setup_llm():
     from llama_index.llms.google_genai import GoogleGenAI
     # בלי temperature: במודלי Gemini 3 ההמלצה היא להשאיר את ברירת המחדל, וערך נמוך עלול לגרום לתקיעה.
     # max_retries=1: בלי ניסיונות חוזרים. timeout של 30 שניות (באלפיות שנייה), כדי שבקשה תקועה תיכשל עם הודעה
-    Settings.llm = GoogleGenAI(model=os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"), max_retries=1,
+    Settings.llm = GoogleGenAI(model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"), max_retries=1,
                                http_options={"timeout": 30_000})
 
 
@@ -54,6 +54,7 @@ class Requirements(BaseModel):
     is_follow_up: bool = Field(default=False, description="האם השאלה מתייחסת למתכונים שכבר הוצגו")
     recipe_number: Optional[int] = Field(default=None, description="מספר המתכון מהרשימה שהוצגה, אם השאלה על מתכון מסוים")
     wants_full_recipe: bool = Field(default=False, description="האם המשתמשת מבקשת להציג מתכון במלואו")
+    wants_more: bool = Field(default=False, description="האם המשתמשת מבקשת עוד רעיונות לאותה בקשה")
 
 
 REQUIREMENTS_PROMPT = PromptTemplate(
@@ -61,26 +62,38 @@ REQUIREMENTS_PROMPT = PromptTemplate(
     "- search_text: נושא החיפוש בלבד, בלי רכיבים אסורים ובלי מילים כמו 'בלי' או 'ללא'.\n"
     "- required_ingredients: רק רכיבים שהמשתמשת דורשת במפורש שיהיו במתכון.\n"
     "- excluded_ingredients: רכיבים שהמשתמשת אוסרת ('בלי', 'ללא', 'אין לי', 'בלי שום').\n"
-    "- preferences: העדפות כלליות שאינן רכיב מחייב.\n"
+    "- preferences: העדפות כלליות שאינן רכיב מחייב. למשל 'קר', 'קל', 'פשוט', 'לאירוח', 'הרבה יחידות' הן העדפות ולא רכיבים.\n"
     "- source_category: אחת מהקטגוריות האלה רק אם השאלה מבקשת אותה במפורש, אחרת null: {categories}\n"
     "- is_follow_up: true אם השאלה מתייחסת למתכונים שכבר הוצגו ('השני', 'במתכון הזה', 'שהצעת').\n"
     "- recipe_number: מספר המתכון ברשימה שהוצגה, אם השאלה על מתכון מסוים ('השני' = 2).\n"
     "- wants_full_recipe: true אם מבקשים להציג מתכון במלואו.\n"
+    "- wants_more: true אם מבקשים עוד רעיונות או מתכונים אחרים לאותה בקשה ('תן עוד', 'יש עוד?', 'משהו אחר'). "
+    "במקרה כזה is_follow_up הוא false, ו־search_text, הרכיבים והקטגוריה נלקחים מהשאלה הקודמת.\n"
     "כתבי שמות רכיבים בצורה בסיסית (למשל 'אגוזים', 'מרגרינה'). אל תמציאי דרישות שלא נאמרו.\n\n"
+    "השאלה הקודמת: {previous}\n"
     "המתכונים שהוצגו לאחרונה: {shown}\n"
     "השאלה: {question}"
 )
 
 
-def parse_requirements(question, categories, shown_titles=()):
+def parse_requirements(question, categories, shown_titles=(), previous=""):
     """מזהה בשאלה רכיבים רצויים ואסורים, העדפות וקטגוריה, באמצעות Gemini דרך structured_predict של LlamaIndex.
     אם הקריאה נכשלת, משתמשת בכללים פשוטים כגיבוי, כדי שהחיפוש ימשיך לעבוד."""
     try:
-        return Settings.llm.structured_predict(
+        requirements = Settings.llm.structured_predict(
             Requirements, REQUIREMENTS_PROMPT, question=question, categories=", ".join(categories),
-            shown=" | ".join(f"{i}. {t}" for i, t in enumerate(shown_titles, 1)) or "אין")
+            shown=" | ".join(f"{i}. {t}" for i, t in enumerate(shown_titles, 1)) or "אין", previous=previous or "אין")
     except Exception:
         return parse_requirements_with_rules(question)
+
+    # בדיקות בקוד אחרי Gemini, כי המודל לא תמיד מקפיד על ההוראות:
+    # רכיב חובה נשאר רק אם הוא באמת מופיע בשאלה (או בשאלה הקודמת, בבקשת "עוד רעיונות")
+    asked = question + " " + (previous if requirements.wants_more else "")
+    requirements.required_ingredients = [i for i in requirements.required_ingredients if mentions(asked, i)]
+    # סינון קשיח לפי קובץ רק כשהמשתמשת ביקשה קטגוריה או קובץ במפורש
+    if not re.search(r"קטגורי|קובץ", asked):
+        requirements.source_category = None
+    return requirements
 
 
 def parse_requirements_with_rules(question):
@@ -97,6 +110,9 @@ RELATED_NAMES = {
     "אגוזים": ["אגוזי מלך", "פקאן", "לוז", "קשיו", "פיסטוק", "בוטנים"],
     "ביצים": ["חלמון", "חלמונים", "חלבון", "חלבונים"],
     "חלב": ["חלבי"],
+    "קמח": ["בצק", "פירורי לחם", "מצה"],  # 'ללא קמח' פוסל גם מתכון שמשתמש בבצק מוכן
+    # אף מתכון לא כותב "גלוטן", אלא את הרכיבים שמכילים אותו
+    "גלוטן": ["קמח", "פירורי לחם", "לחם", "סולת", "פתיתים", "פסטה", "אטריות", "בצק", "מצה", "שיבולת שועל"],
 }
 
 # צירופים שמכילים את שם הרכיב אבל הם רכיב אחר ('תפוחי אדמה' אינם תפוחים)
@@ -107,7 +123,7 @@ DIFFERENT_INGREDIENTS = {
 
 def word_variants(word):
     """צורות פשוטות של מילה: יחיד/רבים וסמיכות ('אגוז', 'אגוזים', 'אגוזי')."""
-    stem = re.sub(r"(ים|ות|י)$", "", word)
+    stem = re.sub(r"(ים|ות|י|ה)$", "", word)  # 'גבינה' -> 'גבינ' -> 'גבינות'
     return {word, stem, stem + "ים", stem + "ות", stem + "י", stem + "ה", stem + "ת"}
 
 
@@ -157,9 +173,10 @@ def search_recipes(index, recipes, question, top_k=10, filters=None):
     return sorted(found.values(), key=lambda item: item["score"], reverse=True)
 
 
-def find_recipes(index, recipes, requirements, max_results=4, progress=lambda step: None):
+def find_recipes(index, recipes, requirements, max_results=4, progress=lambda step: None, exclude_ids=()):
     """חיפוש לפי הדרישות שזוהו, בדיקת רכיבים מול המתכון המלא, והחזרת עד 4 מתכונים מתאימים.
-    אם אחרי הסינון נשארו מעט מתכונים, מחפשים שוב עם יותר מועמדים (חיפוש מדורג)."""
+    אם אחרי הסינון נשארו מעט מתכונים, מחפשים שוב עם יותר מועמדים (חיפוש מדורג).
+    exclude_ids: מתכונים שכבר הוצגו, כשהמשתמשת מבקשת עוד רעיונות."""
     categories = sorted({r["category"] for r in recipes.values()})
 
     # Metadata Filtering: רק כשהמשתמשת ביקשה קטגוריה במפורש, כדי לא לפספס מתכונים מקבצים אחרים
@@ -173,6 +190,8 @@ def find_recipes(index, recipes, requirements, max_results=4, progress=lambda st
         found = search_recipes(index, recipes, requirements.search_text, top_k, filters)
         progress("בודק התאמה לדרישות...")
         for item in found:
+            if item["recipe"]["recipe_id"] in exclude_ids:
+                continue
             item["check"] = check_ingredients(item["recipe"], requirements)
             if item["check"]["ok"]:
                 matching.append(item)
@@ -183,13 +202,19 @@ def find_recipes(index, recipes, requirements, max_results=4, progress=lambda st
 
 
 ANSWER_PROMPT = PromptTemplate(
-    "את עוזרת מתכונים. עני בעברית, באופן טבעי וקצר, רק על סמך המתכונים שלמטה.\n"
+    "את עוזרת מתכונים. עני בעברית, בסגנון שיחה טבעי וזורם וקצר, רק על סמך המתכונים שלמטה.\n"
     "כללים:\n"
     "- אל תמציאי מתכונים, רכיבים, כמויות, הוראות, זמני הכנה או מחברות שלא מופיעים במתכונים.\n"
     "- אם המידע לא מספיק כדי לענות, אמרי זאת במפורש.\n"
-    "- כשממליצים: לכל מתכון כתבי את שמו, את המחברת אם יש, והסבר קצר למה הוא מתאים. "
-    "הזכירי רכיבים רק אם הם רלוונטיים לשאלה.\n"
+    "- אם אף מתכון לא עונה על השאלה, אמרי זאת במשפט אחד, בלי להציע מתכונים שאינם קשורים לשאלה.\n"
+    "- אם השאלה היא על המאגר או על המערכת עצמה ולא בקשה למתכון (למשל 'כמה מתכונים יש לך?'), אמרי שאת יכולה "
+    "לעזור למצוא מתכונים מהמאגר, ואל תסיקי מספרים או מסקנות מהמתכונים שלמטה.\n"
+    "- כשממליצים: פתיח קצר ואז פסקה זורמת ולא רשימה ממוספרת (למשל: 'יש את X, וגם Y יכולה להיות מוצלחת כי...'). "
+    "לכל מתכון משפט אחד קצר: שמו ולמה הוא מתאים. אם יש מחברת, הזכירי אותה. אם אין, אל תכתבי על כך דבר.\n"
+    "- אל תפרטי רשימת רכיבים. הזכירי רכיב רק אם השאלה עוסקת בו.\n"
+    "- אל תכתבי שמות קבצים, הם מופיעים ברשימת המקורות.\n"
     "- הבחיני בין עובדה שכתובה במתכון לבין הערכה שלך (למשל 'נראה מתאים לאירוח').\n"
+    "- כשממליצים, הזכירי את כל המתכונים שלמטה, לפי הסדר שבו הם מופיעים, כדי ששאלות המשך כמו 'השני' יתייחסו למתכון הנכון.\n"
     "- אל תכתבי רשימת מקורות, היא תתווסף אוטומטית.\n\n"
     "המתכונים (ממוספרים):\n{context_str}\n\n"
     "{query_str}\n"
@@ -206,12 +231,21 @@ def recipes_to_nodes(recipe_list):
     return nodes
 
 
-def generate_answer(question, recipe_list, history=()):
+def generate_answer(question, recipe_list, history=(), requirements=None):
     """יוצרת תשובה עם Gemini באמצעות Response Synthesizer של LlamaIndex.
-    history: ההודעות האחרונות בשיחה (עד 6), כדי ש־Gemini יבין שאלות המשך."""
+    history: ההודעות האחרונות בשיחה (עד 6), כדי ש־Gemini יבין שאלות המשך.
+    requirements: דרישות הרכיבים שהקוד כבר בדק, כדי ש־Gemini לא יבדוק אותן שוב בעצמו ויטעה."""
     synthesizer = get_response_synthesizer(response_mode="compact", text_qa_template=ANSWER_PROMPT)
     recent = "\n".join(f"{role}: {text}" for role, text in list(history)[-6:])
     query = (f"השיחה עד עכשיו:\n{recent}\n\n" if recent else "") + f"השאלה: {question}"
+    if requirements and (requirements.excluded_ingredients or requirements.required_ingredients):
+        checked = []
+        if requirements.excluded_ingredients:
+            checked.append("אין בהם: " + ", ".join(requirements.excluded_ingredients))
+        if requirements.required_ingredients:
+            checked.append("יש בהם: " + ", ".join(requirements.required_ingredients))
+        query += ("\n\nכל המתכונים כבר נבדקו מול הרכיבים המלאים, ו" + "; ".join(checked) + ". "
+                  "אל תבדקי זאת שוב, ואל תניחי שרכיב אחר (למשל שמן או חמאה במקום מרגרינה) הוא אותו רכיב.")
     response = synthesizer.synthesize(query, nodes=recipes_to_nodes(recipe_list))
     return str(response)
 
@@ -247,10 +281,11 @@ def answer_question(index, recipes, question, history=(), shown_ids=(), progress
     progress("מבין את הבקשה...")
     shown = [recipes[i] for i in shown_ids if i in recipes]
     categories = sorted({r["category"] for r in recipes.values()})
-    requirements = parse_requirements(question, categories, [r["title"] for r in shown])
+    previous = next((text for role, text in reversed(list(history)) if role == "משתמשת"), "")
+    requirements = parse_requirements(question, categories, [r["title"] for r in shown], previous)
 
     # שאלת המשך על מתכונים שכבר הוצגו: עונים על סמך המתכונים המלאים, בלי חיפוש חדש
-    if requirements.is_follow_up and shown:
+    if requirements.is_follow_up and shown and not requirements.wants_more:
         number = requirements.recipe_number
         targets = [shown[number - 1]] if number and 1 <= number <= len(shown) else shown
         if requirements.wants_full_recipe and len(targets) == 1:
@@ -260,21 +295,24 @@ def answer_question(index, recipes, question, history=(), shown_ids=(), progress
             answer = generate_answer(question, targets, history)
         return {"answer": answer,
                 "sources": [{"label": source_label(r, recipes), "recipe_id": r["recipe_id"]} for r in targets],
-                "recipe_ids": list(shown_ids)}
+                "recipe_ids": list(shown_ids), "requirements": requirements}
 
-    results = find_recipes(index, recipes, requirements, progress=progress)
+    # 'תן עוד רעיונות': חיפוש חדש לפי השאלה הקודמת, בלי המתכונים שכבר הוצגו
+    exclude_ids = set(shown_ids) if requirements.wants_more else set()
+    results = find_recipes(index, recipes, requirements, progress=progress, exclude_ids=exclude_ids)
     if not results:
         return {"answer": "לא מצאתי במאגר מתכונים שעומדים בכל הדרישות שלך.",
-                "sources": [], "recipe_ids": []}
+                "sources": [], "recipe_ids": [], "requirements": requirements}
 
     found = [item["recipe"] for item in results]
     progress("מכין תשובה...")
-    answer = generate_answer(question, found, history)
+    answer = generate_answer(question, found, history, requirements)
     sources = []
     for item in results:
         note = " [לא ניתן לוודא את כל הרכיבים: אין במתכון רשימת רכיבים]" if item["check"]["uncertain"] else ""
         sources.append({"label": source_label(item["recipe"], recipes) + note, "recipe_id": item["recipe"]["recipe_id"]})
-    return {"answer": answer, "sources": sources, "recipe_ids": [r["recipe_id"] for r in found]}
+    return {"answer": answer, "sources": sources, "recipe_ids": [r["recipe_id"] for r in found],
+            "requirements": requirements}
 
 
 if __name__ == "__main__":

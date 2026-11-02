@@ -25,6 +25,7 @@ TEST_QUESTIONS = [
     {"type": "רכיב אסור", "question": "אני מחפשת עוגת שוקולד בלי מרגרינה", "excluded": ["מרגרינה"]},
     {"type": "רכיב אסור", "question": "יש לך מתכון ללא קמח?", "excluded": ["קמח"]},
     {"type": "רכיב אסור", "question": "עוגיות בלי אגוזים", "excluded": ["אגוזים"]},
+    {"type": "רכיב אסור (רגישות)", "question": "חברה שלי רגישה לגלוטן, מה אוכל לשלוח לה?", "excluded": ["גלוטן"]},
     {"type": "חיפוש לפי קטגוריה", "question": "תציע לי כמה סלטים שמתאימים לאירוח"},
     {"type": "קטגוריה מפורשת (Metadata Filtering)", "question": "משהו עם שוקולד מהקטגוריה פטיפורים",
      "category": "פטיפורים"},
@@ -37,7 +38,14 @@ TEST_QUESTIONS = [
 FOLLOW_UP_CONVERSATIONS = [
     ["תציעי לי עוגות שוקולד", "תציגי את השני במלואו"],
     ["תציעי לי עוגות גבינה", "מה ההבדל בין שתי הראשונות?"],
+    ["אני מחפשת מתכון לקינוח פשוט עם הרבה יחידות קטנות שאפשר להביא לכיתה ולהגיש קר",
+     "תן עוד רעיונות למה שביקשתי קודם"],
 ]
+
+
+def describe_requirements(requirements):
+    return (f"אסור: {requirements.excluded_ingredients}, חובה: {requirements.required_ingredients}, "
+            f"קטגוריה: {requirements.source_category}, המשך: {requirements.is_follow_up}, עוד: {requirements.wants_more}")
 
 
 def evaluate_question(index, recipes, test):
@@ -61,8 +69,7 @@ def evaluate_question(index, recipes, test):
     return {
         "סוג": test["type"],
         "שאלה": test["question"],
-        "דרישות שזוהו": f"אסור: {requirements.excluded_ingredients}, חובה: {requirements.required_ingredients}, "
-                        f"קטגוריה: {requirements.source_category}",
+        "דרישות שזוהו": describe_requirements(requirements),
         "תוצאות לפי הסדר": " | ".join(f"{i['score']:.3f} {i['recipe']['title']}" for i in results),
         "מקורות": " | ".join(rag.source_label(i["recipe"], recipes) for i in results),
         "עומד בדרישות": "כן" if not problems else "לא",
@@ -75,14 +82,16 @@ def evaluate_conversation(index, recipes, questions):
     rows, history, shown_ids = [], [], []
     for question in questions:
         result = rag.answer_question(index, recipes, question, history, shown_ids)
+        # בבקשת "עוד רעיונות" אסור שיחזרו מתכונים שכבר הוצגו
+        repeated = set(result["recipe_ids"]) & set(shown_ids) if "עוד" in question else set()
         rows.append({
             "סוג": "שאלת המשך" if history else "פתיחת שיחה",
             "שאלה": question,
-            "דרישות שזוהו": "",
+            "דרישות שזוהו": describe_requirements(result["requirements"]),
             "תוצאות לפי הסדר": result["answer"][:200].replace("\n", " "),
             "מקורות": " | ".join(s["label"] for s in result["sources"]),
-            "עומד בדרישות": "לבדיקה ידנית",
-            "הערות": "",
+            "עומד בדרישות": "לא" if repeated else "לבדיקה ידנית",
+            "הערות": "חזרו מתכונים שכבר הוצגו: " + ", ".join(recipes[i]["title"] for i in repeated) if repeated else "",
         })
         history += [("משתמשת", question), ("מערכת", result["answer"])]
         shown_ids = result["recipe_ids"] or shown_ids
