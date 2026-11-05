@@ -127,19 +127,42 @@ copy .env.example .env
 
 יש לפתוח את `.env` ולהכניס את המפתח ב־`GOOGLE_API_KEY`. הקובץ `.env` לא עולה ל־Git.
 
+### שלב 1: המתכונים (`data/recipes.json`)
+
+המתכונים שכבר חולצו נמצאים במאגר בקובץ `data/recipes.json`. לכן **אין צורך להריץ את `extract_recipes.py`**, ואין צורך בקובצי ה־Word שבתיקייה `data`. החילוץ נדרש רק אם משנים את קובצי המקור או את כללי החילוץ:
+
 ```powershell
-python extract_recipes.py          # חילוץ המתכונים ל־data/recipes.json + extraction_report.txt
-python index_recipes.py            # בניית האינדקס (אפשר להריץ שוב כדי להמשיך בנייה שנעצרה)
-python index_recipes.py --limit 650  # אינדקס חלקי, כדי להשאיר מכסה יומית לשאלות
-python index_recipes.py --show     # הצגת Chunks לדוגמה מהאינדקס
-python rag.py                      # שיחה לדוגמה בטרמינל
+python extract_recipes.py --force  # חילוץ מחדש שדורס את data/recipes.json
+```
+
+### שלב 2: בניית האינדקס (חובה, נבנה מקומית)
+
+האינדקס (`chroma_db/`) לא נשמר ב־Git, ולכן צריך לבנות אותו פעם אחת לפני ההרצה הראשונה.
+
+> **לא חייבים לבנות אינדקס של כל המתכונים.** בחשבון Gemini חינמי יש 1,000 בקשות Embedding ביום, ולאינדקס מלא צריך 1,255, כך שבנייה מלאה לוקחת יומיים. כדי לבדוק את המערכת מספיק אינדקס חלקי:
+>
+> ```powershell
+> python index_recipes.py --limit 650
+> ```
+>
+> הפקודה בונה עד 650 Chunks, עם מתכונים מכל הקטגוריות (נבחרים לסירוגין), ומשאירה מכסה יומית לשאלות בצ'אט. אפשר לבחור גם מספר קטן יותר.
+
+השלמה לאינדקס מלא, אם רוצים (ביום אחר, או ישירות אם יש מכסה):
+
+```powershell
+python index_recipes.py            # ממשיך אוטומטית מהמקום שבו הבנייה נעצרה
+```
+
+### שלב 3: הרצה
+
+```powershell
 streamlit run app.py               # ממשק הצ'אט
+python rag.py                      # שיחה לדוגמה בטרמינל
 python evaluate.py                 # בדיקות אחזור + evaluation_report.csv
+python index_recipes.py --show     # הצגת Chunks לדוגמה מהאינדקס
 ```
 
 - אחרי תיקון ידני של `recipes.json`: `python index_recipes.py --rebuild`.
-- חילוץ מחדש שדורס את `recipes.json`: `python extract_recipes.py --force`.
-- **מכסה:** בחשבון חינמי יש 1,000 בקשות Embedding ביום, ולאינדקס מלא צריך 1,255. לכן בנייה מלאה לוקחת יומיים. הבנייה ממשיכה אוטומטית מהמקום שבו נעצרה, ו־`--limit` מאפשר לבנות אינדקס חלקי ולהשאיר מכסה לשאלות.
 
 ---
 
